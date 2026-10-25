@@ -1,0 +1,26 @@
+{
+  "name": "Insta Trade - Pro Trading Terminal",
+  "short_name": "Insta Trade",
+  "description": "Real-Time Indian Market Web & Mobile Trading Terminal",
+  "start_url": "/?tab=watchlist",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#06090e",
+  "theme_color": "#06090e",
+  "categories": ["finance", "business"],
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
