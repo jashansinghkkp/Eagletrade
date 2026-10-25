@@ -34,7 +34,7 @@ DB_PATH = DATA_DIR / "trading_terminal.db"
 class DatabaseManager:
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
-        raw_db_url = os.environ.get("postgresql://neondb_owner:npg_pIxSJz53GfZD@ep-falling-math-b5bbw8th-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require", "").strip()
+        raw_db_url = os.environ.get("DATABASE_URL", "").strip()
         if raw_db_url.startswith("postgres://"):
             raw_db_url = raw_db_url.replace("postgres://", "postgresql://", 1)
         self.database_url = raw_db_url
