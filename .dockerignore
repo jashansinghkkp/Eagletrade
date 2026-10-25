@@ -1,0 +1,11 @@
+.venv
+__pycache__
+*.pyc
+.env
+user_profile.json
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+.git
+.gitignore
+logs
