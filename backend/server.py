@@ -1,4 +1,3 @@
-
 Insta Trade - Fast, Clean Trading Terminal Backend
 Features:
 1. Multi-User Virtual Trading (Paper Trading) with Real Live Market Prices (Zero broker needed!)
