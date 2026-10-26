@@ -1,3 +1,4 @@
+"""
 Insta Trade - Fast, Clean Trading Terminal Backend
 Features:
 1. Multi-User Virtual Trading (Paper Trading) with Real Live Market Prices (Zero broker needed!)
@@ -486,4 +487,3 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     host = os.getenv("HOST", "0.0.0.0")
     uvicorn.run("backend.server:app", host=host, port=port)
-
