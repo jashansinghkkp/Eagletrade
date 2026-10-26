@@ -34,6 +34,7 @@ DB_PATH = DATA_DIR / "trading_terminal.db"
 class DatabaseManager:
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
+        # Updated to pull dynamically from environment variable
         raw_db_url = os.environ.get("DATABASE_URL", "").strip()
         if raw_db_url.startswith("postgres://"):
             raw_db_url = raw_db_url.replace("postgres://", "postgresql://", 1)
@@ -155,6 +156,9 @@ class DatabaseManager:
                 )
             """)
 
+            # Explicitly commit table creations before migrations
+            conn.commit()
+
             # Safe column migrations for existing tables
             migrations = [
                 ("user_orders", "order_date", "VARCHAR(50) DEFAULT ''"),
@@ -270,9 +274,6 @@ class DatabaseManager:
             """, (clean_user,))
             row = cursor.fetchone()
             if not row:
-                # Seamless Cloud Recovery:
-                # If database was wiped by container redeploy or user logging in on new browser,
-                # auto-create/restore the account immediately with the entered credentials!
                 logger.info(f"Auto-creating/restoring user '{clean_user}' on login.")
                 return self.register_user(
                     username=clean_user,
@@ -309,7 +310,6 @@ class DatabaseManager:
         t = token.strip()
         with self._get_connection() as conn:
             cursor = self._get_cursor(conn)
-            # 1. Multi-device/multi-tab session check
             self._execute(cursor, """
                 SELECT u.username, u.display_name, u.client_id
                 FROM user_sessions s
@@ -319,7 +319,6 @@ class DatabaseManager:
             row = cursor.fetchone()
             if row:
                 return dict(row)
-            # 2. Direct token check
             self._execute(cursor, "SELECT username, display_name, client_id FROM users WHERE token = ?", (t,))
             row = cursor.fetchone()
             if row:
@@ -409,7 +408,6 @@ class DatabaseManager:
                     if not o or not o.get("id") or not o.get("symbol"):
                         continue
                     o_date = o.get("order_date") or o.get("date") or today_ist
-                    # Only accept orders from today's trading session (previous days are cleared at EOD)
                     if o_date != today_ist:
                         continue
                     self._execute(cursor, """
@@ -573,7 +571,6 @@ class DatabaseManager:
         with self._get_connection() as conn:
             cursor = self._get_cursor(conn)
             if today_only:
-                # EOD Auto-Pruning: Purge old orders older than today's IST trading session
                 try:
                     self._execute(cursor, """
                         DELETE FROM user_orders 
@@ -650,7 +647,6 @@ class DatabaseManager:
         today_str = today_date.strftime("%Y-%m-%d")
         cutoff_date_str = (today_date - datetime.timedelta(days=days_limit)).strftime("%Y-%m-%d")
 
-        # Sync today's current Realized P&L from closed positions (Unrealized MTM is strictly excluded)
         try:
             funds = self.get_funds(clean_user)
             today_realized = float(funds.get("realized_pnl", 0.0))
@@ -660,7 +656,6 @@ class DatabaseManager:
         except Exception:
             pass
 
-        # Query ONLY actual recorded rows from genuine trades in the database
         with self._get_connection() as conn:
             cursor = self._get_cursor(conn)
             self._execute(cursor, """
@@ -694,7 +689,6 @@ class DatabaseManager:
                 "status": status,
             })
 
-        # Calculate metrics from real data only
         total_pnl = sum(e["pnl"] for e in all_entries)
         profit_days = [e for e in all_entries if e["pnl"] > 0]
         loss_days = [e for e in all_entries if e["pnl"] < 0]
@@ -705,7 +699,6 @@ class DatabaseManager:
         max_profit_day = max(profit_days, key=lambda x: x["pnl"]) if profit_days else None
         max_loss_day = min(loss_days, key=lambda x: x["pnl"]) if loss_days else None
 
-        # Monthly aggregation from real data only
         monthly_map = {}
         for e in all_entries:
             try:
@@ -729,7 +722,6 @@ class DatabaseManager:
             m["win_rate"] = round((m["profit_days"] / active_d * 100), 1) if active_d > 0 else 0.0
             monthly_breakdown.append(m)
 
-        # Running cumulative P&L
         cumulative = 0.0
         for e in reversed(all_entries):
             cumulative += e["pnl"]
@@ -756,4 +748,3 @@ class DatabaseManager:
 
 # Global DB instance
 db = DatabaseManager()
-
