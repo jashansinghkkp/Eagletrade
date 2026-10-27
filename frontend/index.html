@@ -7057,13 +7057,27 @@
           body: JSON.stringify({ username, password })
         });
         const r = await res.json();
+    
         if (r.s === 'ok' && r.data) {
+          // 1. Save session token and user data
           setAuthSession(r.data.token, r.data);
+        
+           // 2. Close the authentication modal
           closeAuthModal();
+      
           showToast(`Welcome back, ${r.data.display_name || username}!`, 'success');
+      
+          // 3. Force UI refresh and switch away from login/auth view to the main terminal
           await loadUserProfile();
           await refreshFunds();
           await loadDockContent();
+      
+         // 4. Force workstation switch to chart or watchlist so user isn't stuck
+          if (window.innerWidth < 1024) {
+            switchMobileTab('watchlist');
+          } else {
+            switchWorkstation('chart');
+          }
         } else {
           showToast(r.message || 'Login failed. Check your credentials.', 'error');
         }
