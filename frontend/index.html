@@ -7040,6 +7040,7 @@
     }
 
     async function submitLogin() {
+        console.log("SUBMIT LOGIN STARTED");
       const username = (document.getElementById('auth-login-username').value || '').trim();
       const password = (document.getElementById('auth-login-password').value || '').trim();
       const btn = document.getElementById('btn-login-submit');
