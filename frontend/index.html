@@ -1935,7 +1935,7 @@
 
         <div class="pt-2">
           <button onclick="submitRegister()" id="btn-reg-submit" class="w-full py-2.5 rounded-xl bg-brand hover:bg-emerald-400 text-slate-950 font-bold text-xs pill-btn flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-brand/20">
-            <i data-lucide="check-circle" class="w-4 h-4"></i> Create Account & Start Trading
+            <i data-lucide="check-circle" class="w-4 h-4"></i> Save Details & Continue to PayPal
           </button>
         </div><div id="paypal-button-container-P-75H6365063563890NNLOIKLI"></div>
         <script src="https://www.paypal.com/sdk/js?client-id=BAAZutEnynFmmFDTa9NrQfcQxvJJruRbwpGEgOvpRd26ZODjEoYMZGou3igUCShxxCq3iLl_-tBE5HL-oo&vault=true&intent=subscription" data-sdk-integration-source="button-factory"></script>
@@ -1948,13 +1948,15 @@
               label: 'subscribe'
             },
             createSubscription: function(data, actions) {
-              if (!window.pendingSignupId) {
+              const signupId = window.pendingSignupId || localStorage.getItem('eagletrade_pending_signup_id');
+              if (!signupId) {
                 showToast('First fill in your details and click Create Account, then subscribe.', 'error');
                 return Promise.reject(new Error('Complete registration details first.'));
               }
+              window.pendingSignupId = signupId;
               return actions.subscription.create({
                 plan_id: 'P-75H6365063563890NNLOIKLI',
-                custom_id: window.pendingSignupId
+                custom_id: signupId
               });
             },
             onApprove: async function(data) {
