@@ -192,7 +192,7 @@ def verify_paypal_subscription(payload: VerifySubscriptionPayload):
     if str(sub.get("status", "")).upper() != "ACTIVE":
         raise HTTPException(status_code=402, detail="Your PayPal subscription is not active yet.")
     custom_id = sub.get("custom_id")
-    if custom_id and custom_id != payload.signup_id:
+    if custom_id != payload.signup_id:
         raise HTTPException(status_code=400, detail="This PayPal subscription belongs to a different signup session.")
     try:
         result = subscription_store.activate_pending_signup(
