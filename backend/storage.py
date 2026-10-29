@@ -4,6 +4,7 @@ import secrets
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+from backend.security import verify_password, is_password_hash
 
 load_dotenv()
 
@@ -139,7 +140,7 @@ class Database:
     def authenticate_user(self, username: str, password: str):
         clean_user = username.strip().lower()
         user = self.get_user(clean_user)
-        if not user or user["password"] != password:
+        if not user or not verify_password(password, user["password"]):
             return {"s": "error", "message": "Invalid username or password"}
         
         token = user.get("token") or secrets.token_hex(32)
