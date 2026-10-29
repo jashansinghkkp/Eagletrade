@@ -2760,9 +2760,7 @@
         if (overlay) overlay.style.display = 'none';
         document.body.style.userSelect = '';
         document.body.style.cursor = '';
-        try {
-          
-        } catch (err) {}
+        saveCloudPreference('split_ratio', splitRatio);
         resizeAllSplitCharts();
       };
 
@@ -6878,6 +6876,7 @@
       localStorage.removeItem('insta_trade_token');
       localStorage.removeItem('insta_trade_user');
       cloudPreferences = {};
+      pendingCloudPreferenceUpdates = {};
       cloudPreferencesReady = false;
       syncAuthUI(null);
     }
