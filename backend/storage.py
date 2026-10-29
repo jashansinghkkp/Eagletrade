@@ -67,6 +67,55 @@ def init_db():
         );
     """)
 
+
+    # Virtual-trading state used by backend/virtual_engine.py.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_funds (
+            username VARCHAR(50) PRIMARY KEY REFERENCES users(username) ON DELETE CASCADE,
+            available_cash DOUBLE PRECISION NOT NULL DEFAULT 1000000.0,
+            used_margin DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """)
+    # Extend older installations without dropping existing user state.
+    for statement in (
+        "ALTER TABLE user_positions ADD COLUMN IF NOT EXISTS net_qty INTEGER",
+        "ALTER TABLE user_positions ADD COLUMN IF NOT EXISTS buy_avg DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE user_positions ADD COLUMN IF NOT EXISTS sell_avg DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE user_positions ADD COLUMN IF NOT EXISTS expiry VARCHAR(40) NOT NULL DEFAULT ''",
+        "ALTER TABLE user_positions ADD COLUMN IF NOT EXISTS created_date VARCHAR(20) NOT NULL DEFAULT ''",
+        "ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS type VARCHAR(20) NOT NULL DEFAULT 'BUY'",
+        "ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS order_type_text VARCHAR(20) NOT NULL DEFAULT 'MARKET'",
+        "ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS product VARCHAR(30) NOT NULL DEFAULT 'INTRADAY'",
+        "ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS expiry VARCHAR(40) NOT NULL DEFAULT ''",
+        "ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS order_date VARCHAR(20) NOT NULL DEFAULT ''",
+        "ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS time VARCHAR(20) NOT NULL DEFAULT ''",
+        "ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE daily_pnl ADD COLUMN IF NOT EXISTS order_count INTEGER NOT NULL DEFAULT 0",
+    ):
+        cursor.execute(statement)
+    cursor.execute("""
+        UPDATE user_positions
+        SET net_qty = CASE WHEN COALESCE(side, 1) < 0 THEN -ABS(COALESCE(qty, 0))
+                           ELSE ABS(COALESCE(qty, 0)) END
+        WHERE net_qty IS NULL
+    """)
+    cursor.execute("""
+        UPDATE user_positions
+        SET buy_avg = COALESCE(NULLIF(avg_price, 0), buy_avg),
+            sell_avg = COALESCE(NULLIF(avg_price, 0), sell_avg)
+        WHERE buy_avg = 0 OR sell_avg = 0
+    """)
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS user_positions_username_symbol_uidx
+        ON user_positions (username, symbol)
+    """)
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS daily_pnl_username_date_uidx
+        ON daily_pnl (username, date)
+    """)
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -232,6 +281,259 @@ class Database:
         conn.commit()
         cursor.close()
         conn.close()
+
+
+    def get_all_users(self):
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT username FROM users ORDER BY username")
+                return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def get_funds(self, username: str):
+        clean_user = username.strip().lower()
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO user_funds (username)
+                    SELECT username FROM users WHERE LOWER(username) = %s
+                    ON CONFLICT (username) DO NOTHING
+                """, (clean_user,))
+                cursor.execute("""
+                    SELECT available_cash, used_margin, realized_pnl
+                    FROM user_funds WHERE username = %s
+                """, (clean_user,))
+                row = cursor.fetchone()
+                if not row:
+                    raise ValueError(f"Trading account not found for user '{clean_user}'")
+                conn.commit()
+                return dict(row)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def update_funds(self, username: str, available_cash: float, used_margin: float, realized_pnl: float):
+        clean_user = username.strip().lower()
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO user_funds (username, available_cash, used_margin, realized_pnl, updated_at)
+                    SELECT username, %s, %s, %s, NOW()
+                    FROM users WHERE LOWER(username) = %s
+                    ON CONFLICT (username) DO UPDATE SET
+                        available_cash = EXCLUDED.available_cash,
+                        used_margin = EXCLUDED.used_margin,
+                        realized_pnl = EXCLUDED.realized_pnl,
+                        updated_at = NOW()
+                """, (available_cash, used_margin, realized_pnl, clean_user))
+                if cursor.rowcount == 0:
+                    raise ValueError(f"Trading account not found for user '{clean_user}'")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def reset_funds(self, username: str, capital: float = 1000000.0):
+        clean_user = username.strip().lower()
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO user_funds (username, available_cash, used_margin, realized_pnl, updated_at)
+                    SELECT username, %s, 0, 0, NOW()
+                    FROM users WHERE LOWER(username) = %s
+                    ON CONFLICT (username) DO UPDATE SET
+                        available_cash = EXCLUDED.available_cash,
+                        used_margin = 0,
+                        realized_pnl = 0,
+                        updated_at = NOW()
+                """, (capital, clean_user))
+                if cursor.rowcount == 0:
+                    raise ValueError(f"Trading account not found for user '{clean_user}'")
+                cursor.execute("DELETE FROM user_positions WHERE LOWER(username) = %s", (clean_user,))
+                cursor.execute("DELETE FROM user_orders WHERE LOWER(username) = %s", (clean_user,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_positions(self, username: str):
+        clean_user = username.strip().lower()
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, username, symbol, qty, avg_price, side, net_qty,
+                           buy_avg, sell_avg, expiry, created_date
+                    FROM user_positions
+                    WHERE LOWER(username) = %s
+                    ORDER BY id
+                """, (clean_user,))
+                rows = [dict(row) for row in cursor.fetchall()]
+            positions = []
+            for row in rows:
+                net_qty = row.get("net_qty")
+                if net_qty is None:
+                    net_qty = abs(int(row.get("qty") or 0)) * (-1 if int(row.get("side") or 1) < 0 else 1)
+                row["net_qty"] = int(net_qty)
+                row["side"] = "BUY" if row["net_qty"] > 0 else "SELL"
+                row["buy_avg"] = float(row.get("buy_avg") or row.get("avg_price") or 0)
+                row["sell_avg"] = float(row.get("sell_avg") or row.get("avg_price") or 0)
+                row["expiry"] = row.get("expiry") or ""
+                row["created_date"] = row.get("created_date") or ""
+                positions.append(row)
+            return positions
+        finally:
+            conn.close()
+
+    def save_position(self, username: str, position: dict):
+        clean_user = username.strip().lower()
+        symbol = position.get("symbol")
+        if not symbol:
+            raise ValueError("Position symbol is required")
+        net_qty = int(position.get("net_qty", 0))
+        avg_price = float(position.get("buy_avg") or position.get("sell_avg") or 0)
+        legacy_side = 1 if net_qty >= 0 else -1
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO user_positions
+                        (username, symbol, qty, avg_price, side, net_qty, buy_avg, sell_avg, expiry, created_date)
+                    SELECT username, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    FROM users WHERE LOWER(username) = %s
+                    ON CONFLICT (username, symbol) DO UPDATE SET
+                        qty = EXCLUDED.qty,
+                        avg_price = EXCLUDED.avg_price,
+                        side = EXCLUDED.side,
+                        net_qty = EXCLUDED.net_qty,
+                        buy_avg = EXCLUDED.buy_avg,
+                        sell_avg = EXCLUDED.sell_avg,
+                        expiry = EXCLUDED.expiry,
+                        created_date = EXCLUDED.created_date
+                """, (
+                    symbol, abs(net_qty), avg_price, legacy_side, net_qty,
+                    float(position.get("buy_avg") or 0), float(position.get("sell_avg") or 0),
+                    position.get("expiry") or "", position.get("created_date") or "",
+                    clean_user
+                ))
+                if cursor.rowcount == 0:
+                    raise ValueError(f"Trading account not found for user '{clean_user}'")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def delete_position(self, username: str, symbol: str):
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM user_positions WHERE LOWER(username) = %s AND symbol = %s",
+                               (username.strip().lower(), symbol))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def add_order(self, username: str, order: dict):
+        clean_user = username.strip().lower()
+        side_text = str(order.get("side") or order.get("type") or "BUY").upper()
+        side_num = 1 if side_text == "BUY" else -1
+        order_type_text = str(order.get("order_type") or "MARKET").upper()
+        order_type_num = 2 if order_type_text == "MARKET" else 1
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO user_orders
+                        (username, order_id, symbol, qty, side, order_type, product_type,
+                         price, status, type, order_type_text, product, expiry, order_date,
+                         time, realized_pnl)
+                    SELECT username, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    FROM users WHERE LOWER(username) = %s
+                """, (
+                    str(order.get("id") or order.get("order_id") or ""),
+                    order.get("symbol"), int(order.get("qty") or 0), side_num, order_type_num,
+                    str(order.get("product") or "INTRADAY"), float(order.get("price") or 0),
+                    str(order.get("status") or "FILLED"), side_text, order_type_text,
+                    str(order.get("product") or "INTRADAY"), str(order.get("expiry") or ""),
+                    str(order.get("order_date") or ""), str(order.get("time") or ""),
+                    float(order.get("realized_pnl") or order.get("pnl") or 0), clean_user
+                ))
+                if cursor.rowcount == 0:
+                    raise ValueError(f"Trading account not found for user '{clean_user}'")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_orders(self, username: str, today_only: bool = False):
+        clean_user = username.strip().lower()
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                query = """
+                    SELECT id, order_id, symbol, qty, side, order_type, product_type,
+                           price, status, type, order_type_text, product, expiry, order_date,
+                           time, realized_pnl
+                    FROM user_orders WHERE LOWER(username) = %s
+                """
+                params = [clean_user]
+                if today_only:
+                    from datetime import datetime, timezone, timedelta
+                    today = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d")
+                    query += " AND order_date = %s"
+                    params.append(today)
+                query += " ORDER BY id DESC"
+                cursor.execute(query, params)
+                rows = [dict(row) for row in cursor.fetchall()]
+            orders = []
+            for row in rows:
+                row["id"] = row.get("order_id") or str(row.get("id"))
+                row["side"] = row.get("type") or ("BUY" if int(row.get("side") or 1) > 0 else "SELL")
+                row["type"] = row["side"]
+                row["order_type"] = row.get("order_type_text") or ("MARKET" if int(row.get("order_type") or 2) == 2 else "LIMIT")
+                row["product"] = row.get("product") or row.get("product_type") or "INTRADAY"
+                orders.append(row)
+            return orders
+        finally:
+            conn.close()
+
+    def record_daily_pnl(self, username: str, date: str, pnl: float, order_count: int = 0):
+        clean_user = username.strip().lower()
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO daily_pnl (username, date, pnl, order_count)
+                    SELECT username, %s, %s, %s FROM users WHERE LOWER(username) = %s
+                    ON CONFLICT (username, date) DO UPDATE SET
+                        pnl = EXCLUDED.pnl, order_count = EXCLUDED.order_count
+                """, (date, pnl, order_count, clean_user))
+                if cursor.rowcount == 0:
+                    raise ValueError(f"Trading account not found for user '{clean_user}'")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def get_daily_pnl_history(self, username: str, days_limit: int = 365):
         clean_user = username.strip().lower()
