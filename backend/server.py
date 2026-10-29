@@ -221,18 +221,25 @@ async def paypal_webhook(request: Request):
         raise HTTPException(status_code=503, detail="Webhook signature verification is unavailable.")
     if not valid:
         raise HTTPException(status_code=400, detail="Invalid PayPal webhook signature.")
-    event_type = str(event.get("event_type", ""))
     resource = event.get("resource") or {}
     subscription_id = resource.get("id")
-    status_by_event = {
-        "BILLING.SUBSCRIPTION.ACTIVATED": "active",
-        "BILLING.SUBSCRIPTION.CANCELLED": "cancelled",
-        "BILLING.SUBSCRIPTION.SUSPENDED": "suspended",
-        "BILLING.SUBSCRIPTION.EXPIRED": "expired",
-    }
-    status = status_by_event.get(event_type)
-    if status and subscription_id:
-        subscription_store.set_subscription_status(subscription_id, status)
+    if subscription_id:
+        # Query PayPal's current state instead of trusting event order; webhooks can be retried or arrive late.
+        try:
+            current = paypal_client.get_subscription(subscription_id)
+        except PayPalAPIError as exc:
+            logger.warning("Could not refresh subscription status from PayPal: %s", exc)
+            raise HTTPException(status_code=503, detail="Unable to refresh subscription status.")
+        if current.get("plan_id") == paypal_client.plan_id:
+            actual_status = str(current.get("status", "")).upper()
+            status_map = {
+                "ACTIVE": "active",
+                "SUSPENDED": "suspended",
+                "CANCELLED": "cancelled",
+                "EXPIRED": "expired",
+            }
+            normalized = status_map.get(actual_status, "inactive")
+            subscription_store.set_subscription_status(subscription_id, normalized)
     return {"status": "received"}
 
 
