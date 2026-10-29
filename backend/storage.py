@@ -4,7 +4,7 @@ import secrets
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
-from backend.security import verify_password, is_password_hash
+from backend.security import verify_password, is_password_hash, hash_password
 
 load_dotenv()
 
@@ -115,7 +115,7 @@ class Database:
         try:
             cursor.execute(
                 "INSERT INTO users (username, password, display_name, client_id, token) VALUES (%s, %s, %s, %s, %s)",
-                (clean_user, password, display_name or clean_user, client_id or "XH01499", token)
+                (clean_user, password if is_password_hash(password) else hash_password(password), display_name or clean_user, client_id or "XH01499", token)
             )
             conn.commit()
         except Exception as e:
@@ -190,7 +190,7 @@ class Database:
         params = []
         if password:
             updates.append("password = %s")
-            params.append(password)
+            params.append(password if is_password_hash(password) else hash_password(password))
         if display_name:
             updates.append("display_name = %s")
             params.append(display_name)
