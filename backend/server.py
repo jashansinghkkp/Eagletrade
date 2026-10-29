@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Any
 import secrets
+import re
 from fastapi import FastAPI, HTTPException, Query, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -163,6 +164,8 @@ def admin_list_demo_accounts(_: None = Depends(require_admin_key)):
 @app.post("/api/admin/demo-accounts")
 def admin_create_demo_account(payload: DemoAccountPayload, _: None = Depends(require_admin_key)):
     username = (payload.username or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9_.-]{3,50}", username):
+        raise HTTPException(status_code=400, detail="Username must be 3–50 characters using letters, numbers, dots, underscores, or hyphens.")
     if len(payload.password) < 8 or len(payload.password) > 128:
         raise HTTPException(status_code=400, detail="Demo password must be between 8 and 128 characters.")
     result = subscription_store.create_demo_account(
