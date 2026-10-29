@@ -2089,7 +2089,8 @@
 
     function applyTheme(theme) {
       currentTheme = theme;
-      localStorage.setItem('theme', theme);
+      try { localStorage.setItem('theme', theme); } catch (e) {}
+      saveCloudPreference('theme', theme);
       document.documentElement.setAttribute('data-theme', theme);
 
       const themeText = document.getElementById('theme-text');
@@ -2204,9 +2205,8 @@
     }
 
     function saveActiveWatchlist(list) {
-      try {
-        localStorage.setItem('insta_trade_watchlist', JSON.stringify(list));
-      } catch (e) {}
+      try { localStorage.setItem('insta_trade_watchlist', JSON.stringify(list)); } catch (e) {}
+      saveCloudPreference('watchlist', list);
     }
 
     function getTodayISTDateString() {
@@ -2841,12 +2841,14 @@
       updateSplitMaximizeButtons();
       applySplitRatio(ratio, true);
       try { localStorage.setItem('insta_trade_split_ratio', ratio.toFixed(3)); } catch (e) {}
+      saveCloudPreference('split_ratio', ratio);
       triggerHaptic(10);
     }
 
     function toggleSplitOrientation() {
       splitOrientation = splitOrientation === 'horizontal' ? 'vertical' : 'horizontal';
       try { localStorage.setItem('insta_trade_split_orientation', splitOrientation); } catch (e) {}
+      saveCloudPreference('split_orientation', splitOrientation);
       const stage = document.getElementById('split-stage-container');
       const btnText = document.getElementById('split-orient-text');
       if (stage) {
@@ -2889,6 +2891,8 @@
         localStorage.setItem('insta_trade_split_widgets', JSON.stringify(splitWidgets));
         localStorage.setItem('insta_trade_split_ratio', splitRatio.toFixed(3));
       } catch (e) {}
+      saveCloudPreference('split_widgets', splitWidgets);
+      saveCloudPreference('split_ratio', splitRatio);
 
       syncSplitWidgetSelects();
       renderSplitContextControls('p1');
@@ -2957,6 +2961,7 @@
       try {
         localStorage.setItem('insta_trade_split_widgets', JSON.stringify(splitWidgets));
       } catch (e) {}
+      saveCloudPreference('split_widgets', splitWidgets);
 
       showSplitWidgetView(paneId, widgetType);
       renderSplitContextControls(paneId);
@@ -6806,6 +6811,95 @@
       return null;
     }
 
+    // Neon-backed per-user preferences. LocalStorage is used only as a temporary
+    // migration source; the authenticated Neon record is authoritative after sync.
+    let cloudPreferences = {};
+    let cloudPreferenceTimer = null;
+    let cloudPreferencesReady = false;
+
+    function saveCloudPreference(key, value) {
+      if (!getAuthToken() || !key) return;
+      cloudPreferences[key] = value;
+      if (!cloudPreferencesReady) return;
+      if (cloudPreferenceTimer) clearTimeout(cloudPreferenceTimer);
+      cloudPreferenceTimer = setTimeout(async () => {
+        try {
+          const response = await fetch('/api/preferences', {
+            method: 'PUT',
+            headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ preferences: { [key]: value } })
+          });
+          if (!response.ok) console.warn('Cloud preference save failed:', key, response.status);
+        } catch (error) {
+          console.warn('Cloud preference save failed:', key, error);
+        }
+      }, 350);
+    }
+
+    async function loadCloudPreferences() {
+      if (!getAuthToken()) return;
+      cloudPreferencesReady = false;
+      try {
+        const response = await fetch('/api/preferences', { headers: getAuthHeaders() });
+        if (!response.ok) throw new Error('Cloud preferences unavailable');
+        const result = await response.json();
+        const remote = result && result.s === 'ok' && result.data ? result.data : {};
+        const localDefaults = {};
+        try {
+          const watchlist = localStorage.getItem('insta_trade_watchlist');
+          if (watchlist) localDefaults.watchlist = JSON.parse(watchlist);
+          const theme = localStorage.getItem('theme');
+          if (theme) localDefaults.theme = theme;
+          const orientation = localStorage.getItem('insta_trade_split_orientation');
+          const ratio = localStorage.getItem('insta_trade_split_ratio');
+          const widgets = localStorage.getItem('insta_trade_split_widgets');
+          if (orientation) localDefaults.split_orientation = orientation;
+          if (ratio && Number.isFinite(Number(ratio))) localDefaults.split_ratio = Number(ratio);
+          if (widgets) localDefaults.split_widgets = JSON.parse(widgets);
+        } catch (e) {}
+
+        const hasRemote = Object.keys(remote).length > 0;
+        if (!hasRemote && Object.keys(localDefaults).length) {
+          // One-time migration of preferences from this browser into the user's Neon row.
+          await fetch('/api/preferences', {
+            method: 'PUT',
+            headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ preferences: localDefaults })
+          });
+          cloudPreferences = { ...localDefaults };
+        } else {
+          cloudPreferences = { ...remote };
+          if (Array.isArray(remote.watchlist) && remote.watchlist.length) {
+            try { localStorage.setItem('insta_trade_watchlist', JSON.stringify(remote.watchlist)); } catch (e) {}
+          }
+          if (remote.theme === 'dark' || remote.theme === 'light') {
+            try { localStorage.setItem('theme', remote.theme); } catch (e) {}
+            applyTheme(remote.theme);
+          }
+          if (remote.split_orientation === 'horizontal' || remote.split_orientation === 'vertical') {
+            splitOrientation = remote.split_orientation;
+            try { localStorage.setItem('insta_trade_split_orientation', splitOrientation); } catch (e) {}
+          }
+          if (Number.isFinite(Number(remote.split_ratio))) {
+            splitRatio = Math.max(0.15, Math.min(0.85, Number(remote.split_ratio)));
+            try { localStorage.setItem('insta_trade_split_ratio', splitRatio.toFixed(3)); } catch (e) {}
+          }
+          if (remote.split_widgets && remote.split_widgets.p1 && remote.split_widgets.p2) {
+            splitWidgets = { p1: remote.split_widgets.p1, p2: remote.split_widgets.p2 };
+            try { localStorage.setItem('insta_trade_split_widgets', JSON.stringify(splitWidgets)); } catch (e) {}
+          }
+        }
+        cloudPreferencesReady = true;
+        if (Array.isArray(cloudPreferences.watchlist) && cloudPreferences.watchlist.length) {
+          renderWatchlist?.();
+        }
+        if (typeof initOrResizeSplitScreen === 'function') initOrResizeSplitScreen();
+      } catch (error) {
+        console.warn('Neon preference sync unavailable; local display preferences remain available.', error);
+        cloudPreferencesReady = false;
+      }
+    }
+
     function setAuthSession(token, user) {
       if (token) {
         localStorage.setItem('insta_trade_token', token);
@@ -6814,11 +6908,14 @@
         localStorage.setItem('insta_trade_user', JSON.stringify(user));
       }
       syncAuthUI(user);
+      if (token && user) loadCloudPreferences();
     }
 
     function clearAuthSession() {
       localStorage.removeItem('insta_trade_token');
       localStorage.removeItem('insta_trade_user');
+      cloudPreferences = {};
+      cloudPreferencesReady = false;
       syncAuthUI(null);
     }
 
