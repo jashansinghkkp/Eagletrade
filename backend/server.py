@@ -192,7 +192,7 @@ def verify_paypal_subscription(payload: VerifySubscriptionPayload):
     if str(sub.get("status", "")).upper() != "ACTIVE":
         raise HTTPException(status_code=402, detail="Your PayPal subscription is not active yet.")
     custom_id = sub.get("custom_id")
-    if custom_id and custom_id != payload.signup_id:
+    if custom_id != payload.signup_id:
         raise HTTPException(status_code=400, detail="This PayPal subscription belongs to a different signup session.")
     try:
         result = subscription_store.activate_pending_signup(
@@ -221,18 +221,25 @@ async def paypal_webhook(request: Request):
         raise HTTPException(status_code=503, detail="Webhook signature verification is unavailable.")
     if not valid:
         raise HTTPException(status_code=400, detail="Invalid PayPal webhook signature.")
-    event_type = str(event.get("event_type", ""))
     resource = event.get("resource") or {}
     subscription_id = resource.get("id")
-    status_by_event = {
-        "BILLING.SUBSCRIPTION.ACTIVATED": "active",
-        "BILLING.SUBSCRIPTION.CANCELLED": "cancelled",
-        "BILLING.SUBSCRIPTION.SUSPENDED": "suspended",
-        "BILLING.SUBSCRIPTION.EXPIRED": "expired",
-    }
-    status = status_by_event.get(event_type)
-    if status and subscription_id:
-        subscription_store.set_subscription_status(subscription_id, status)
+    if subscription_id:
+        # Query PayPal's current state instead of trusting event order; webhooks can be retried or arrive late.
+        try:
+            current = paypal_client.get_subscription(subscription_id)
+        except PayPalAPIError as exc:
+            logger.warning("Could not refresh subscription status from PayPal: %s", exc)
+            raise HTTPException(status_code=503, detail="Unable to refresh subscription status.")
+        if current.get("plan_id") == paypal_client.plan_id:
+            actual_status = str(current.get("status", "")).upper()
+            status_map = {
+                "ACTIVE": "active",
+                "SUSPENDED": "suspended",
+                "CANCELLED": "cancelled",
+                "EXPIRED": "expired",
+            }
+            normalized = status_map.get(actual_status, "inactive")
+            subscription_store.set_subscription_status(subscription_id, normalized)
     return {"status": "received"}
 
 
@@ -398,7 +405,7 @@ def get_fyers_auth_url(redirect_uri: str = Query("https://127.0.0.1:5000/fyers/c
 
 
 @app.post("/api/fyers/token")
-def set_fyers_token(payload: FyersTokenPayload):
+def set_fyers_token(payload: FyersTokenPayload, username: str = Depends(require_authenticated_user)):
     app_id = payload.app_id.strip() if payload.app_id else fyers_client.app_id
     secret_key = payload.secret_key.strip() if payload.secret_key else fyers_client.secret_key
     client_id = payload.client_id.strip() if payload.client_id else getattr(fyers_client, "client_id", "XH01499")
@@ -566,9 +573,9 @@ def get_holdings(username: Optional[str] = Depends(get_current_username)):
 @app.get("/api/account/pnl-history")
 def get_account_pnl_history(
     range: str = "1y",
-    username: Optional[str] = Depends(get_current_username)
+    username: str = Depends(require_authenticated_user)
 ):
-    clean_user = (username or "aman_trader").strip().lower()
+    clean_user = username.strip().lower()
     days_map = {"30d": 30, "3m": 90, "6m": 180, "1y": 365}
     days_limit = days_map.get(range.lower(), 365)
     history_data = db.get_daily_pnl_history(username=clean_user, days_limit=days_limit)

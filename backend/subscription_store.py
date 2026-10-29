@@ -40,12 +40,13 @@ def create_pending_signup(username: str, password_hash: str, display_name: str =
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            cur.execute("DELETE FROM pending_signups WHERE created_at < NOW() - INTERVAL '24 hours'")
             cur.execute("SELECT 1 FROM users WHERE LOWER(username) = LOWER(%s)", (clean,))
             if cur.fetchone():
                 return {"s": "error", "message": "Username already exists."}
             cur.execute("SELECT 1 FROM pending_signups WHERE LOWER(username) = LOWER(%s)", (clean,))
             if cur.fetchone():
-                cur.execute("DELETE FROM pending_signups WHERE LOWER(username) = LOWER(%s)", (clean,))
+                return {"s": "error", "message": "A signup is already pending for this username. Resume that signup or try again after 24 hours."}
             cur.execute(
                 "INSERT INTO pending_signups (signup_id, username, password_hash, display_name, client_id) VALUES (%s, %s, %s, %s, %s)",
                 (signup_id, clean, password_hash, (display_name or clean)[:100], (client_id or "")[:50]),
