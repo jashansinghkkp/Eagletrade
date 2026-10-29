@@ -6264,86 +6264,53 @@
       const cacheKeyPos = 'insta_trade_saved_positions_' + activeUser;
       const cacheKeyOrd = 'insta_trade_saved_orders_' + activeUser + '_' + todayIST;
 
-      // EOD Auto-Pruning: Purge old legacy order cache keys from previous days
-      try {
-        const keysToRemove = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && k.startsWith('insta_trade_saved_orders_' + activeUser) && k !== cacheKeyOrd) {
-            keysToRemove.push(k);
-          }
-        }
-        keysToRemove.forEach(k => localStorage.removeItem(k));
-      } catch (e) {}
-
       let positions = [];
       let orders = [];
-
       try {
         const [posRes, ordRes] = await Promise.all([
-          fetch('/api/positions', { headers: getAuthHeaders() }).then(r => r.json()).catch(() => ({ positions: [] })),
-          fetch('/api/orders', { headers: getAuthHeaders() }).then(r => r.json()).catch(() => ({ orders: [] }))
+          fetch('/api/positions', { headers: getAuthHeaders() }).then(r => r.json()),
+          fetch('/api/orders', { headers: getAuthHeaders() }).then(r => r.json())
         ]);
-        positions = posRes.positions || [];
-        orders = ordRes.orders || [];
+        positions = Array.isArray(posRes.positions) ? posRes.positions : [];
+        orders = Array.isArray(ordRes.orders) ? ordRes.orders : [];
+
+        // One-time migration only: import old browser caches if the cloud account is empty.
+        if (positions.length === 0 && orders.length === 0 && getAuthToken()) {
+          let legacyPositions = [];
+          let legacyOrders = [];
+          try { legacyPositions = JSON.parse(localStorage.getItem(cacheKeyPos) || '[]'); } catch (e) {}
+          try { legacyOrders = JSON.parse(localStorage.getItem(cacheKeyOrd) || '[]'); } catch (e) {}
+          if ((Array.isArray(legacyPositions) && legacyPositions.length) || (Array.isArray(legacyOrders) && legacyOrders.length)) {
+            const migration = await fetch('/api/migrate-local-state', {
+              method: 'POST',
+              headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+              body: JSON.stringify({
+                positions: Array.isArray(legacyPositions) ? legacyPositions : [],
+                orders: Array.isArray(legacyOrders) ? legacyOrders : []
+              })
+            });
+            if (migration.ok) {
+              const [mPos, mOrd] = await Promise.all([
+                fetch('/api/positions', { headers: getAuthHeaders() }).then(r => r.json()),
+                fetch('/api/orders', { headers: getAuthHeaders() }).then(r => r.json())
+              ]);
+              positions = Array.isArray(mPos.positions) ? mPos.positions : [];
+              orders = Array.isArray(mOrd.orders) ? mOrd.orders : [];
+              if (positions.length || orders.length) {
+                localStorage.removeItem(cacheKeyPos);
+                localStorage.removeItem(cacheKeyOrd);
+                showToast('Previous browser trading data migrated to your online account.', 'success');
+              }
+            }
+          }
+        }
 
         positions.forEach(p => {
-          if (p.expiry === '2026-10-02' || p.expiry === '02 Oct 2026') {
-            p.expiry = '2026-10-01';
-          }
+          if (p.expiry === '2026-10-02' || p.expiry === '02 Oct 2026') p.expiry = '2026-10-01';
         });
       } catch (e) {
-        console.warn('Dock fetch error:', e);
-      }
-
-      // Positions LocalStorage Caching & Auto-Restore
-      if (positions.length > 0) {
-        try { localStorage.setItem(cacheKeyPos, JSON.stringify(positions)); } catch (e) {}
-      } else if (!window._userExplicitlyClosedAll) {
-        const savedPosRaw = localStorage.getItem(cacheKeyPos);
-        if (savedPosRaw) {
-          try {
-            const savedPos = JSON.parse(savedPosRaw);
-            if (Array.isArray(savedPos) && savedPos.length > 0) {
-              savedPos.forEach(p => {
-                if (p.expiry === '2026-10-02' || p.expiry === '02 Oct 2026') {
-                  p.expiry = '2026-10-01';
-                }
-              });
-              const syncRes = await fetch('/api/positions/sync', {
-                method: 'POST',
-                headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ positions: savedPos, orders: orders })
-              });
-              const syncData = await syncRes.json();
-              if (syncData && syncData.positions && syncData.positions.length > 0) {
-                positions = syncData.positions;
-              } else {
-                positions = savedPos;
-              }
-              if (syncData && syncData.orders && syncData.orders.length > 0) {
-                orders = syncData.orders;
-              }
-            }
-          } catch (err) {
-            console.warn('Position auto-restore error:', err);
-          }
-        }
-      }
-
-      // Daily Orders LocalStorage Caching (Current Trading Day Only)
-      if (orders.length > 0) {
-        try { localStorage.setItem(cacheKeyOrd, JSON.stringify(orders)); } catch (e) {}
-      } else {
-        const savedOrdRaw = localStorage.getItem(cacheKeyOrd);
-        if (savedOrdRaw) {
-          try {
-            const savedOrd = JSON.parse(savedOrdRaw);
-            if (Array.isArray(savedOrd) && savedOrd.length > 0) {
-              orders = savedOrd;
-            }
-          } catch (e) {}
-        }
+        console.error('Could not load online trading data from Neon:', e);
+        showToast('Unable to load cloud trading data. Check your connection and try again.', 'error');
       }
 
       window.latestPositions = positions;
