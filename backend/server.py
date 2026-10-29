@@ -160,6 +160,22 @@ def require_authenticated_user(
 def admin_list_demo_accounts(_: None = Depends(require_admin_key)):
     return {"s": "ok", "accounts": subscription_store.list_demo_accounts()}
 
+@app.get("/api/admin/subscribers")
+def admin_list_paid_subscribers(_: None = Depends(require_admin_key)):
+    return {"s": "ok", "accounts": subscription_store.list_paid_subscribers()}
+
+
+@app.patch("/api/admin/subscribers/{username}")
+def admin_set_paid_subscriber_access(
+    username: str,
+    enabled: bool = Query(...),
+    _: None = Depends(require_admin_key),
+):
+    changed = subscription_store.set_paid_subscriber_access(username, enabled)
+    if not changed:
+        raise HTTPException(status_code=404, detail="Paid subscriber not found.")
+    return {"s": "ok", "username": username.strip().lower(), "enabled": enabled}
+
 
 @app.post("/api/admin/demo-accounts")
 def admin_create_demo_account(payload: DemoAccountPayload, _: None = Depends(require_admin_key)):
@@ -644,6 +660,13 @@ if FRONTEND_DIR.exists():
         admin_page = FRONTEND_DIR / "admin-demo.html"
         if not admin_page.exists():
             raise HTTPException(status_code=404, detail="Admin page not found.")
+        return FileResponse(str(admin_page))
+
+    @app.get("/admin/subscribers", include_in_schema=False)
+    def serve_admin_subscribers_page():
+        admin_page = FRONTEND_DIR / "admin-subscribers.html"
+        if not admin_page.exists():
+            raise HTTPException(status_code=404, detail="Admin subscriber page not found.")
         return FileResponse(str(admin_page))
 
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")

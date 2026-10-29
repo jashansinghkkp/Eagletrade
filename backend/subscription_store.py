@@ -27,6 +27,7 @@ def init_subscription_tables():
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
+            cur.execute("ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS admin_access_enabled BOOLEAN NOT NULL DEFAULT TRUE")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS demo_accounts (
                     username VARCHAR(50) PRIMARY KEY REFERENCES users(username) ON DELETE CASCADE,
@@ -135,9 +136,9 @@ def is_subscription_active(username: str) -> bool:
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT status FROM user_subscriptions WHERE LOWER(username) = LOWER(%s)", (username,))
+            cur.execute("SELECT status, admin_access_enabled FROM user_subscriptions WHERE LOWER(username) = LOWER(%s)", (username,))
             row = cur.fetchone()
-            if not row or str(row["status"]).lower() != "active":
+            if not row or str(row["status"]).lower() != "active" or not row.get("admin_access_enabled", True):
                 return False
             cur.execute("SELECT enabled FROM demo_accounts WHERE LOWER(username) = LOWER(%s)", (username,))
             demo = cur.fetchone()
@@ -236,5 +237,52 @@ def get_subscription(username: str):
             cur.execute("SELECT paypal_subscription_id, plan_id, status, updated_at FROM user_subscriptions WHERE LOWER(username) = LOWER(%s)", (username,))
             row = cur.fetchone()
             return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_paid_subscribers():
+    """List paid subscriber account metadata without exposing password hashes or auth tokens."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT u.username, u.display_name, u.client_id,
+                       s.paypal_subscription_id, s.plan_id, s.status,
+                       s.admin_access_enabled, s.updated_at
+                FROM user_subscriptions s
+                JOIN users u ON u.username = s.username
+                LEFT JOIN demo_accounts d ON d.username = s.username
+                WHERE s.paypal_subscription_id IS NOT NULL
+                  AND d.username IS NULL
+                ORDER BY s.updated_at DESC NULLS LAST, u.username ASC
+            """)
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def set_paid_subscriber_access(username: str, enabled: bool) -> bool:
+    """Admin access gate is separate from PayPal status so webhooks cannot undo it."""
+    clean = (username or "").strip().lower()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE user_subscriptions
+                SET admin_access_enabled = %s, updated_at = NOW()
+                WHERE LOWER(username) = LOWER(%s)
+                  AND paypal_subscription_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM demo_accounts d
+                      WHERE LOWER(d.username) = LOWER(user_subscriptions.username)
+                  )
+            """, (bool(enabled), clean))
+            changed = cur.rowcount > 0
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
