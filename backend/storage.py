@@ -69,6 +69,17 @@ def init_db():
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_trade_state (
+            username VARCHAR(50) PRIMARY KEY REFERENCES users(username) ON DELETE CASCADE,
+            funds JSONB NOT NULL DEFAULT '{"available_cash":1000000.0,"used_margin":0.0,"realized_pnl":0.0}'::jsonb,
+            positions JSONB NOT NULL DEFAULT '[]'::jsonb,
+            orders JSONB NOT NULL DEFAULT '[]'::jsonb,
+            holdings JSONB NOT NULL DEFAULT '[]'::jsonb,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_preferences (
             username VARCHAR(50) PRIMARY KEY REFERENCES users(username) ON DELETE CASCADE,
             preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -242,6 +253,119 @@ class Database:
         cursor.close()
         conn.close()
 
+
+
+    def _get_trade_state(self, username: str):
+        clean = username.strip().lower()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT funds, positions, orders, holdings FROM user_trade_state WHERE username = %s", (clean,))
+            row = cursor.fetchone()
+            if row:
+                return {k: (dict(row[k]) if k == "funds" and row[k] else list(row[k] or []) if k != "funds" else {"available_cash": 1000000.0, "used_margin": 0.0, "realized_pnl": 0.0}) for k in ("funds", "positions", "orders", "holdings")}
+            cursor.execute("INSERT INTO user_trade_state (username) VALUES (%s) ON CONFLICT (username) DO NOTHING", (clean,))
+            conn.commit()
+            return {"funds": {"available_cash": 1000000.0, "used_margin": 0.0, "realized_pnl": 0.0}, "positions": [], "orders": [], "holdings": []}
+        finally:
+            cursor.close()
+            conn.close()
+
+    def _update_trade_state(self, username: str, **changes):
+        clean = username.strip().lower()
+        allowed = {"funds", "positions", "orders", "holdings"}
+        if not changes or any(k not in allowed for k in changes):
+            raise ValueError("Invalid trade-state fields")
+        state = self._get_trade_state(clean)
+        state.update(changes)
+        encoded = {k: json.dumps(v, separators=(",", ":"), allow_nan=False) for k, v in state.items() if k in allowed}
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO user_trade_state (username, funds, positions, orders, holdings, updated_at)
+                VALUES (%s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, NOW())
+                ON CONFLICT (username) DO UPDATE SET
+                    funds = EXCLUDED.funds, positions = EXCLUDED.positions,
+                    orders = EXCLUDED.orders, holdings = EXCLUDED.holdings,
+                    updated_at = NOW()
+            """, (clean, encoded["funds"], encoded["positions"], encoded["orders"], encoded["holdings"]))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+
+    def get_funds(self, username: str):
+        return self._get_trade_state(username)["funds"]
+
+    def update_funds(self, username: str, available_cash: float, used_margin: float, realized_pnl: float):
+        funds = {"available_cash": float(available_cash), "used_margin": float(used_margin), "realized_pnl": float(realized_pnl)}
+        self._update_trade_state(username, funds=funds)
+
+    def reset_funds(self, username: str, capital: float = 1000000.0):
+        self._update_trade_state(username, funds={"available_cash": float(capital), "used_margin": 0.0, "realized_pnl": 0.0}, positions=[], orders=[], holdings=[])
+
+    def get_positions(self, username: str):
+        return self._get_trade_state(username)["positions"]
+
+    def save_position(self, username: str, position: dict):
+        positions = self.get_positions(username)
+        symbol = position.get("symbol")
+        replaced = False
+        for i, item in enumerate(positions):
+            if item.get("symbol") == symbol:
+                positions[i] = dict(position)
+                replaced = True
+                break
+        if not replaced:
+            positions.append(dict(position))
+        self._update_trade_state(username, positions=positions)
+
+    def delete_position(self, username: str, symbol: str):
+        positions = [p for p in self.get_positions(username) if p.get("symbol") != symbol]
+        self._update_trade_state(username, positions=positions)
+
+    def get_orders(self, username: str, today_only: bool = False):
+        orders = self._get_trade_state(username)["orders"]
+        if today_only:
+            ist = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+            today = ist.strftime("%Y-%m-%d")
+            orders = [o for o in orders if o.get("order_date") == today]
+        return orders
+
+    def add_order(self, username: str, order: dict):
+        orders = self.get_orders(username)
+        orders.insert(0, dict(order))
+        self._update_trade_state(username, orders=orders[:5000])
+
+    def get_all_users(self):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT username FROM users ORDER BY username")
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            cursor.close()
+            conn.close()
+
+    def record_daily_pnl(self, username: str, date: str, pnl: float, trade_count: int = 0):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO daily_pnl (username, date, pnl) VALUES (%s, %s, %s)
+                ON CONFLICT DO NOTHING
+            """, (username.strip().lower(), date, float(pnl)))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+            conn.close()
 
     def get_preferences(self, username: str):
         clean_user = username.strip().lower()
