@@ -367,6 +367,19 @@ class Database:
             cursor.close()
             conn.close()
 
+
+    def import_legacy_trade_state_if_empty(self, username: str, positions: list, orders: list):
+        clean = username.strip().lower()
+        current = self._get_trade_state(clean)
+        if current["positions"] or current["orders"]:
+            return {"imported": False, "reason": "cloud_state_exists"}
+        safe_positions = [dict(p) for p in positions[:2000] if isinstance(p, dict) and p.get("symbol")]
+        safe_orders = [dict(o) for o in orders[:5000] if isinstance(o, dict)]
+        if not safe_positions and not safe_orders:
+            return {"imported": False, "reason": "nothing_to_import"}
+        self._update_trade_state(clean, positions=safe_positions, orders=safe_orders)
+        return {"imported": True, "positions": len(safe_positions), "orders": len(safe_orders)}
+
     def get_preferences(self, username: str):
         clean_user = username.strip().lower()
         conn = get_db_connection()
