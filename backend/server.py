@@ -636,6 +636,13 @@ def get_account_pnl_history(
 
 # ------------------ FRONTEND MOUNT ------------------
 if FRONTEND_DIR.exists():
+    @app.get("/admin/demo-accounts", include_in_schema=False)
+    def serve_admin_demo_page():
+        admin_page = FRONTEND_DIR / "admin-demo.html"
+        if not admin_page.exists():
+            raise HTTPException(status_code=404, detail="Admin page not found.")
+        return FileResponse(str(admin_page))
+
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
     @app.get("/")
