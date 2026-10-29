@@ -229,31 +229,13 @@ class Database:
         return self.get_user(clean_user)
 
     def sync_user_state(self, username: str, positions=None, orders=None):
-        clean_user = username.strip().lower()
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
+        changes = {}
         if positions is not None:
-            cursor.execute("DELETE FROM user_positions WHERE username = %s", (clean_user,))
-            for p in positions:
-                cursor.execute(
-                    "INSERT INTO user_positions (username, symbol, qty, avg_price, side) VALUES (%s, %s, %s, %s, %s)",
-                    (clean_user, p.get("symbol"), p.get("qty", 0), p.get("avg_price", 0.0), p.get("side", 1))
-                )
-                
+            changes["positions"] = [dict(p) for p in positions if isinstance(p, dict)]
         if orders is not None:
-            cursor.execute("DELETE FROM user_orders WHERE username = %s", (clean_user,))
-            for o in orders:
-                cursor.execute(
-                    "INSERT INTO user_orders (username, order_id, symbol, qty, side, order_type, product_type, price, status) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (clean_user, str(o.get("order_id", "")), o.get("symbol"), o.get("qty", 0), o.get("side", 1), o.get("order_type", 2), o.get("product_type", "INTRADAY"), o.get("price", 0.0), o.get("status", "COMPLETE"))
-                )
-                
-        conn.commit()
-        cursor.close()
-        conn.close()
-
-
+            changes["orders"] = [dict(o) for o in orders if isinstance(o, dict)]
+        if changes:
+            self._update_trade_state(username, **changes)
 
     def _get_trade_state(self, username: str):
         clean = username.strip().lower()
@@ -355,10 +337,11 @@ class Database:
         conn = get_db_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute("""
-                INSERT INTO daily_pnl (username, date, pnl) VALUES (%s, %s, %s)
-                ON CONFLICT DO NOTHING
-            """, (username.strip().lower(), date, float(pnl)))
+            cursor.execute("DELETE FROM daily_pnl WHERE username = %s AND date = %s", (username.strip().lower(), date))
+            cursor.execute(
+                "INSERT INTO daily_pnl (username, date, pnl) VALUES (%s, %s, %s)",
+                (username.strip().lower(), date, float(pnl)),
+            )
             conn.commit()
         except Exception:
             conn.rollback()
