@@ -1,6 +1,7 @@
 import os
 import hashlib
 import secrets
+import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
@@ -64,6 +65,14 @@ def init_db():
             username VARCHAR(50) REFERENCES users(username) ON DELETE CASCADE,
             date VARCHAR(20),
             pnl FLOAT
+        );
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_preferences (
+            username VARCHAR(50) PRIMARY KEY REFERENCES users(username) ON DELETE CASCADE,
+            preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
     """)
 
@@ -232,6 +241,52 @@ class Database:
         conn.commit()
         cursor.close()
         conn.close()
+
+
+    def get_preferences(self, username: str):
+        clean_user = username.strip().lower()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT preferences FROM user_preferences WHERE username = %s",
+                (clean_user,),
+            )
+            row = cursor.fetchone()
+            return dict(row["preferences"] or {}) if row else {}
+        finally:
+            cursor.close()
+            conn.close()
+
+    def update_preferences(self, username: str, preferences: dict):
+        clean_user = username.strip().lower()
+        encoded = json.dumps(preferences, separators=(",", ":"), allow_nan=False)
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO user_preferences (username, preferences, updated_at)
+                VALUES (%s, %s::jsonb, NOW())
+                ON CONFLICT (username) DO UPDATE
+                SET preferences = user_preferences.preferences || EXCLUDED.preferences,
+                    updated_at = NOW()
+                """,
+                (clean_user, encoded),
+            )
+            conn.commit()
+            cursor.execute(
+                "SELECT preferences, updated_at FROM user_preferences WHERE username = %s",
+                (clean_user,),
+            )
+            row = cursor.fetchone()
+            return {"preferences": dict(row["preferences"] or {}), "updated_at": row["updated_at"].isoformat() if row and row.get("updated_at") else None}
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            cursor.close()
+            conn.close()
 
     def get_daily_pnl_history(self, username: str, days_limit: int = 365):
         clean_user = username.strip().lower()
