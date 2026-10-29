@@ -2089,7 +2089,6 @@
 
     function applyTheme(theme) {
       currentTheme = theme;
-      try { localStorage.setItem('theme', theme); } catch (e) {}
       saveCloudPreference('theme', theme);
       document.documentElement.setAttribute('data-theme', theme);
 
@@ -2195,6 +2194,7 @@
 
     function getActiveWatchlist() {
       try {
+        if (cloudPreferencesReady && Array.isArray(cloudPreferences.watchlist) && cloudPreferences.watchlist.length) return [...cloudPreferences.watchlist];
         const saved = localStorage.getItem('insta_trade_watchlist');
         if (saved) {
           const parsed = JSON.parse(saved);
@@ -2205,8 +2205,8 @@
     }
 
     function saveActiveWatchlist(list) {
-      try { localStorage.setItem('insta_trade_watchlist', JSON.stringify(list)); } catch (e) {}
-      saveCloudPreference('watchlist', list);
+      cloudPreferences.watchlist = Array.isArray(list) ? [...list] : [];
+      saveCloudPreference('watchlist', cloudPreferences.watchlist);
     }
 
     function getTodayISTDateString() {
@@ -2761,7 +2761,7 @@
         document.body.style.userSelect = '';
         document.body.style.cursor = '';
         try {
-          localStorage.setItem('insta_trade_split_ratio', splitRatio.toFixed(3));
+          
         } catch (err) {}
         resizeAllSplitCharts();
       };
@@ -2840,14 +2840,14 @@
       splitMaximizedPane = null;
       updateSplitMaximizeButtons();
       applySplitRatio(ratio, true);
-      try { localStorage.setItem('insta_trade_split_ratio', ratio.toFixed(3)); } catch (e) {}
+      try {  } catch (e) {}
       saveCloudPreference('split_ratio', ratio);
       triggerHaptic(10);
     }
 
     function toggleSplitOrientation() {
       splitOrientation = splitOrientation === 'horizontal' ? 'vertical' : 'horizontal';
-      try { localStorage.setItem('insta_trade_split_orientation', splitOrientation); } catch (e) {}
+      try {  } catch (e) {}
       saveCloudPreference('split_orientation', splitOrientation);
       const stage = document.getElementById('split-stage-container');
       const btnText = document.getElementById('split-orient-text');
@@ -2888,8 +2888,8 @@
       splitRatio = Math.max(0.15, Math.min(0.85, 1 - splitRatio));
 
       try {
-        localStorage.setItem('insta_trade_split_widgets', JSON.stringify(splitWidgets));
-        localStorage.setItem('insta_trade_split_ratio', splitRatio.toFixed(3));
+        
+        
       } catch (e) {}
       saveCloudPreference('split_widgets', splitWidgets);
       saveCloudPreference('split_ratio', splitRatio);
@@ -2942,7 +2942,7 @@
       try {
         localStorage.setItem('insta_trade_split_orientation', 'horizontal');
         localStorage.setItem('insta_trade_split_ratio', '0.500');
-        localStorage.setItem('insta_trade_split_widgets', JSON.stringify(splitWidgets));
+        
       } catch (e) {}
       initOrResizeSplitScreen();
       showToast('Split layout reset to default (50:50 Chart + Option Chain)', 'info');
@@ -2959,7 +2959,7 @@
     function changeSplitWidget(paneId, widgetType) {
       splitWidgets[paneId] = widgetType;
       try {
-        localStorage.setItem('insta_trade_split_widgets', JSON.stringify(splitWidgets));
+        
       } catch (e) {}
       saveCloudPreference('split_widgets', splitWidgets);
 
@@ -6828,32 +6828,29 @@
         const hasRemote = Object.keys(remote).length > 0;
         if (!hasRemote && Object.keys(localDefaults).length) {
           // One-time migration of preferences from this browser into the user's Neon row.
-          await fetch('/api/preferences', {
+          const migrationResponse = await fetch('/api/preferences', {
             method: 'PUT',
             headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ preferences: localDefaults })
           });
+          if (!migrationResponse.ok) throw new Error('Could not migrate browser preferences');
           cloudPreferences = { ...localDefaults };
+          ['insta_trade_watchlist', 'theme', 'insta_trade_split_orientation', 'insta_trade_split_ratio', 'insta_trade_split_widgets'].forEach(k => localStorage.removeItem(k));
         } else {
           cloudPreferences = { ...remote };
-          if (Array.isArray(remote.watchlist) && remote.watchlist.length) {
-            try { localStorage.setItem('insta_trade_watchlist', JSON.stringify(remote.watchlist)); } catch (e) {}
-          }
-          if (remote.theme === 'dark' || remote.theme === 'light') {
-            try { localStorage.setItem('theme', remote.theme); } catch (e) {}
-            applyTheme(remote.theme);
-          }
+          if (Array.isArray(remote.watchlist) && remote.watchlist.length) cloudPreferences.watchlist = [...remote.watchlist];
+          if (remote.theme === 'dark' || remote.theme === 'light') applyTheme(remote.theme);
           if (remote.split_orientation === 'horizontal' || remote.split_orientation === 'vertical') {
             splitOrientation = remote.split_orientation;
-            try { localStorage.setItem('insta_trade_split_orientation', splitOrientation); } catch (e) {}
+            try {  } catch (e) {}
           }
           if (Number.isFinite(Number(remote.split_ratio))) {
             splitRatio = Math.max(0.15, Math.min(0.85, Number(remote.split_ratio)));
-            try { localStorage.setItem('insta_trade_split_ratio', splitRatio.toFixed(3)); } catch (e) {}
+            try {  } catch (e) {}
           }
           if (remote.split_widgets && remote.split_widgets.p1 && remote.split_widgets.p2) {
             splitWidgets = { p1: remote.split_widgets.p1, p2: remote.split_widgets.p2 };
-            try { localStorage.setItem('insta_trade_split_widgets', JSON.stringify(splitWidgets)); } catch (e) {}
+            try {  } catch (e) {}
           }
         }
         cloudPreferencesReady = true;
