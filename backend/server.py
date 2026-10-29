@@ -9,17 +9,32 @@ Features:
 import os
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Any
-from fastapi import FastAPI, HTTPException, Query, Header, Depends
+from fastapi import FastAPI, HTTPException, Query, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+import logging
+
+from backend.paypal import paypal_client, PayPalConfigurationError, PayPalAPIError
+from backend.security import hash_password
+from backend import subscription_store
 
 from backend.storage import db
 from backend.virtual_engine import VirtualTradingEngine
 from backend.fyers_client import FyersClient
 
-app = FastAPI(title="Insta Trade", description="High-Speed Indian Market Virtual Trading Terminal")
+logger = logging.getLogger(__name__)
+app = FastAPI(title="EAGLETRADE", description="Virtual trading terminal with mandatory PayPal subscription")
+
+
+@app.on_event("startup")
+def startup_subscription_tables():
+    try:
+        subscription_store.init_subscription_tables()
+    except Exception as exc:
+        logger.error("Subscription tables could not be initialized: %s", exc)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -85,30 +100,25 @@ def get_current_username(
     x_auth_token: Optional[str] = Header(None, alias="X-Auth-Token"),
     x_user_name: Optional[str] = Header(None, alias="X-User-Name"),
 ) -> Optional[str]:
+    # Never trust X-User-Name by itself. Identity must be proven by a server-issued token.
     token = None
     if authorization and authorization.startswith("Bearer "):
-        token = authorization.split("Bearer ")[1].strip()
+        token = authorization.split("Bearer ", 1)[1].strip()
     elif x_auth_token:
         token = x_auth_token.strip()
-
-    if token:
+    if not token:
+        return None
+    try:
         user = db.get_user_by_token(token)
-        if user:
-            return user["username"]
-        # Seamless recovery across ephemeral container resets:
-        if x_user_name and len(x_user_name.strip()) >= 3:
-            user = db.restore_user(username=x_user_name.strip(), token=token)
-            if user:
-                return user["username"]
-
-    # Fallback: if valid X-User-Name is passed and user exists
-    if x_user_name and len(x_user_name.strip()) >= 3:
-        clean = x_user_name.strip().lower()
-        user = db.get_user(clean)
-        if user:
-            return user["username"]
-
-    return None
+        if not user:
+            return None
+        # Unpaid, suspended, cancelled, or expired accounts are not treated as authenticated.
+        if not subscription_store.is_subscription_active(user["username"]):
+            return None
+        return user["username"]
+    except Exception as exc:
+        logger.warning("Authentication lookup failed: %s", exc)
+        return None
 
 
 def require_authenticated_user(
@@ -116,11 +126,17 @@ def require_authenticated_user(
     x_auth_token: Optional[str] = Header(None, alias="X-Auth-Token"),
     x_user_name: Optional[str] = Header(None, alias="X-User-Name"),
 ) -> str:
-    username = get_current_username(authorization=authorization, x_auth_token=x_auth_token, x_user_name=x_user_name)
+    username = get_current_username(
+        authorization=authorization,
+        x_auth_token=x_auth_token,
+        x_user_name=x_user_name,
+    )
     if username:
         return username
-
-    raise HTTPException(status_code=401, detail="Please sign in with your Login ID and Password to trade.")
+    raise HTTPException(
+        status_code=401,
+        detail="Sign in with an account that has an active PayPal subscription.",
+    )
 
 
 # ------------------ STATUS & SYSTEM ------------------
@@ -137,36 +153,152 @@ def get_status():
     }
 
 
+# ------------------ PAYPAL SUBSCRIPTIONS ------------------
+class PendingSignupPayload(BaseModel):
+    username: str
+    password: str
+    display_name: Optional[str] = ""
+    client_id: Optional[str] = ""
+
+
+class VerifySubscriptionPayload(BaseModel):
+    signup_id: str
+    subscription_id: str
+
+
+@app.get("/api/paypal/config")
+def get_paypal_config():
+    return paypal_client.public_config()
+
+
+@app.post("/api/paypal/verify")
+def verify_paypal_subscription(payload: VerifySubscriptionPayload):
+    if not paypal_client.is_configured:
+        raise HTTPException(status_code=503, detail="PayPal is not configured on the server.")
+    pending = subscription_store.get_pending_signup(payload.signup_id)
+    if not pending:
+        raise HTTPException(status_code=400, detail="Signup session not found. Please register again.")
+    try:
+        sub = paypal_client.get_subscription(payload.subscription_id)
+    except PayPalConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except PayPalAPIError as exc:
+        logger.warning("PayPal verification failed: %s", exc)
+        raise HTTPException(status_code=502, detail="PayPal could not verify this subscription. Please retry.")
+    if sub.get("id") != payload.subscription_id:
+        raise HTTPException(status_code=400, detail="PayPal subscription ID mismatch.")
+    if sub.get("plan_id") != paypal_client.plan_id:
+        raise HTTPException(status_code=400, detail="Subscription plan does not match EAGLETRADE's required plan.")
+    if str(sub.get("status", "")).upper() != "ACTIVE":
+        raise HTTPException(status_code=402, detail="Your PayPal subscription is not active yet.")
+    custom_id = sub.get("custom_id")
+    if custom_id and custom_id != payload.signup_id:
+        raise HTTPException(status_code=400, detail="This PayPal subscription belongs to a different signup session.")
+    try:
+        result = subscription_store.activate_pending_signup(
+            signup_id=payload.signup_id,
+            subscription_id=payload.subscription_id,
+            plan_id=paypal_client.plan_id,
+        )
+    except Exception as exc:
+        logger.exception("Could not activate paid account")
+        raise HTTPException(status_code=500, detail="Subscription was verified but account activation failed. Contact support.")
+    if result.get("s") != "ok":
+        raise HTTPException(status_code=400, detail=result.get("message", "Could not activate account."))
+    return {"s": "ok", "message": result["message"], "data": {"username": result["username"]}}
+
+
+@app.post("/api/paypal/webhook")
+async def paypal_webhook(request: Request):
+    try:
+        event = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid webhook payload.")
+    try:
+        valid = paypal_client.verify_webhook_signature(dict(request.headers), event)
+    except (PayPalConfigurationError, PayPalAPIError) as exc:
+        logger.warning("PayPal webhook verification failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Webhook signature verification is unavailable.")
+    if not valid:
+        raise HTTPException(status_code=400, detail="Invalid PayPal webhook signature.")
+    event_type = str(event.get("event_type", ""))
+    resource = event.get("resource") or {}
+    subscription_id = resource.get("id")
+    status_by_event = {
+        "BILLING.SUBSCRIPTION.ACTIVATED": "active",
+        "BILLING.SUBSCRIPTION.CANCELLED": "cancelled",
+        "BILLING.SUBSCRIPTION.SUSPENDED": "suspended",
+        "BILLING.SUBSCRIPTION.EXPIRED": "expired",
+    }
+    status = status_by_event.get(event_type)
+    if status and subscription_id:
+        subscription_store.set_subscription_status(subscription_id, status)
+    return {"status": "received"}
+
+
 # ------------------ USER AUTH ENDPOINTS ------------------
 @app.post("/api/auth/register")
 def register_account(payload: RegisterPayload):
-    return db.register_user(
-        username=payload.username,
-        password=payload.password,
-        display_name=payload.display_name,
-        client_id=payload.client_id,
+    if not paypal_client.is_configured:
+        raise HTTPException(status_code=503, detail="PayPal is not configured. Please contact the site administrator.")
+    username = payload.username.strip().lower()
+    if len(username) < 3 or len(username) > 50:
+        raise HTTPException(status_code=400, detail="Username must be between 3 and 50 characters.")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    result = subscription_store.create_pending_signup(
+        username=username,
+        password_hash=hash_password(payload.password),
+        display_name=payload.display_name or "",
+        client_id=payload.client_id or "",
     )
+    if result.get("s") != "ok":
+        raise HTTPException(status_code=409, detail=result.get("message", "Unable to start registration."))
+    return result
 
 
 @app.post("/api/auth/login")
 def login_account(payload: LoginPayload):
-    return db.authenticate_user(username=payload.username, password=payload.password)
+    result = db.authenticate_user(username=payload.username, password=payload.password)
+    if result.get("s") != "ok":
+        raise HTTPException(status_code=401, detail=result.get("message", "Invalid username or password."))
+    username = (result.get("user") or {}).get("username", payload.username)
+    try:
+        active = subscription_store.is_subscription_active(username)
+    except Exception:
+        logger.exception("Subscription status lookup failed during login")
+        raise HTTPException(status_code=503, detail="Unable to check subscription status. Please retry.")
+    if not active:
+        raise HTTPException(status_code=402, detail="An active PayPal subscription is required before you can sign in.")
+    user = result.get("user") or {}
+    return {
+        "s": "ok",
+        "message": "Login successful",
+        "data": {
+            "token": result.get("token"),
+            "username": user.get("username", username),
+            "display_name": user.get("display_name") or username,
+            "client_id": user.get("client_id") or "",
+        },
+    }
 
 
 @app.post("/api/auth/restore")
 def restore_account(payload: RestorePayload):
-    user = db.restore_user(
-        username=payload.username,
-        token=payload.token,
-        display_name=payload.display_name,
-        client_id=payload.client_id,
-    )
-    if not user:
-        raise HTTPException(status_code=400, detail="Unable to restore account")
+    # Restore validates an existing server-issued token; it never replaces tokens or creates users.
+    user = db.get_user_by_token(payload.token)
+    if not user or user.get("username", "").lower() != payload.username.strip().lower():
+        raise HTTPException(status_code=401, detail="Session is invalid. Please sign in again.")
+    if not subscription_store.is_subscription_active(user["username"]):
+        raise HTTPException(status_code=402, detail="An active PayPal subscription is required.")
     funds = virtual_engine.get_funds_for_user(user["username"])
     return {
         "s": "ok",
-        "user": user,
+        "user": {
+            "username": user["username"],
+            "display_name": user.get("display_name"),
+            "client_id": user.get("client_id"),
+        },
         "token": payload.token,
         "funds": funds,
     }
@@ -182,6 +314,7 @@ def get_current_user_profile(username: str = Depends(require_authenticated_user)
         "s": "ok",
         "user": user,
         "funds": funds,
+        "subscription": subscription_store.get_subscription(username),
     }
 
 
@@ -189,15 +322,11 @@ def get_current_user_profile(username: str = Depends(require_authenticated_user)
 def update_credentials(payload: UpdateCredentialsPayload, username: str = Depends(require_authenticated_user)):
     user = db.update_user_credentials(
         username=username,
-        password=payload.password,
+        password=hash_password(payload.password) if payload.password else "",
         display_name=payload.display_name,
         client_id=payload.client_id,
     )
-    return {
-        "s": "ok",
-        "message": "Account credentials updated successfully!",
-        "user": user,
-    }
+    return {"s": "ok", "message": "Account credentials updated successfully!", "user": user}
 
 
 @app.get("/api/profile")
@@ -221,15 +350,11 @@ def get_profile(username: Optional[str] = Depends(get_current_username)):
 def save_profile(payload: UpdateCredentialsPayload, username: str = Depends(require_authenticated_user)):
     user = db.update_user_credentials(
         username=username,
-        password=payload.password,
+        password=hash_password(payload.password) if payload.password else "",
         display_name=payload.display_name,
         client_id=payload.client_id,
     )
-    return {
-        "s": "ok",
-        "message": f"Credentials saved for '{username}'!",
-        "data": user,
-    }
+    return {"s": "ok", "message": f"Credentials saved for '{username}'!", "data": user}
 
 
 # ------------------ MARKET DATA ENDPOINTS (STREAMING) ------------------
