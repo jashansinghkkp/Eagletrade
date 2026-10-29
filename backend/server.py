@@ -662,6 +662,13 @@ if FRONTEND_DIR.exists():
             raise HTTPException(status_code=404, detail="Admin page not found.")
         return FileResponse(str(admin_page))
 
+    @app.get("/admin/subscribers", include_in_schema=False)
+    def serve_admin_subscribers_page():
+        admin_page = FRONTEND_DIR / "admin-subscribers.html"
+        if not admin_page.exists():
+            raise HTTPException(status_code=404, detail="Admin subscriber page not found.")
+        return FileResponse(str(admin_page))
+
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
     @app.get("/")
