@@ -160,6 +160,22 @@ def require_authenticated_user(
 def admin_list_demo_accounts(_: None = Depends(require_admin_key)):
     return {"s": "ok", "accounts": subscription_store.list_demo_accounts()}
 
+@app.get("/api/admin/subscribers")
+def admin_list_paid_subscribers(_: None = Depends(require_admin_key)):
+    return {"s": "ok", "accounts": subscription_store.list_paid_subscribers()}
+
+
+@app.patch("/api/admin/subscribers/{username}")
+def admin_set_paid_subscriber_access(
+    username: str,
+    enabled: bool = Query(...),
+    _: None = Depends(require_admin_key),
+):
+    changed = subscription_store.set_paid_subscriber_access(username, enabled)
+    if not changed:
+        raise HTTPException(status_code=404, detail="Paid subscriber not found.")
+    return {"s": "ok", "username": username.strip().lower(), "enabled": enabled}
+
 
 @app.post("/api/admin/demo-accounts")
 def admin_create_demo_account(payload: DemoAccountPayload, _: None = Depends(require_admin_key)):
