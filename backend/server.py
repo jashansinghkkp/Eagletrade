@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Query, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import logging
 
 from backend.paypal import paypal_client, PayPalConfigurationError, PayPalAPIError
@@ -92,6 +92,9 @@ class OrderPayload(BaseModel):
 class SyncStatePayload(BaseModel):
     positions: Optional[List[Dict[str, Any]]] = None
     orders: Optional[List[Dict[str, Any]]] = None
+
+class PreferencesPayload(BaseModel):
+    preferences: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ------------------ USER AUTH DEPENDENCY ------------------
@@ -355,6 +358,31 @@ def save_profile(payload: UpdateCredentialsPayload, username: str = Depends(requ
         client_id=payload.client_id,
     )
     return {"s": "ok", "message": f"Credentials saved for '{username}'!", "data": user}
+
+
+# ------------------ CLOUD USER PREFERENCES (NEON POSTGRESQL) ------------------
+@app.get("/api/preferences")
+def get_cloud_preferences(username: str = Depends(require_authenticated_user)):
+    try:
+        return {"s": "ok", "data": db.get_preferences(username)}
+    except Exception:
+        logger.exception("Could not load cloud preferences")
+        raise HTTPException(status_code=503, detail="Could not load cloud preferences.")
+
+
+@app.put("/api/preferences")
+def save_cloud_preferences(payload: PreferencesPayload, username: str = Depends(require_authenticated_user)):
+    # Keep preferences bounded and reject unexpected non-JSON data.
+    if len(payload.preferences) > 100:
+        raise HTTPException(status_code=413, detail="Too many preference fields.")
+    try:
+        saved = db.update_preferences(username, payload.preferences)
+        return {"s": "ok", "data": saved["preferences"], "updated_at": saved["updated_at"]}
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Preferences must contain valid JSON values.")
+    except Exception:
+        logger.exception("Could not save cloud preferences")
+        raise HTTPException(status_code=503, detail="Could not save cloud preferences.")
 
 
 # ------------------ MARKET DATA ENDPOINTS (STREAMING) ------------------
