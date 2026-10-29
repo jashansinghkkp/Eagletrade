@@ -398,7 +398,7 @@ def get_fyers_auth_url(redirect_uri: str = Query("https://127.0.0.1:5000/fyers/c
 
 
 @app.post("/api/fyers/token")
-def set_fyers_token(payload: FyersTokenPayload):
+def set_fyers_token(payload: FyersTokenPayload, username: str = Depends(require_authenticated_user)):
     app_id = payload.app_id.strip() if payload.app_id else fyers_client.app_id
     secret_key = payload.secret_key.strip() if payload.secret_key else fyers_client.secret_key
     client_id = payload.client_id.strip() if payload.client_id else getattr(fyers_client, "client_id", "XH01499")
@@ -566,9 +566,9 @@ def get_holdings(username: Optional[str] = Depends(get_current_username)):
 @app.get("/api/account/pnl-history")
 def get_account_pnl_history(
     range: str = "1y",
-    username: Optional[str] = Depends(get_current_username)
+    username: str = Depends(require_authenticated_user)
 ):
-    clean_user = (username or "aman_trader").strip().lower()
+    clean_user = username.strip().lower()
     days_map = {"30d": 30, "3m": 90, "6m": 180, "1y": 365}
     days_limit = days_map.get(range.lower(), 365)
     history_data = db.get_daily_pnl_history(username=clean_user, days_limit=days_limit)
