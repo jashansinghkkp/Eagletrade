@@ -9,6 +9,8 @@ Features:
 import os
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Any
+import secrets
+import re
 from fastapi import FastAPI, HTTPException, Query, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -63,6 +65,12 @@ class RegisterPayload(BaseModel):
     password: str
     display_name: Optional[str] = ""
     client_id: Optional[str] = ""
+
+
+class DemoAccountPayload(BaseModel):
+    username: str
+    password: str
+    display_name: Optional[str] = ""
 
 
 class UpdateCredentialsPayload(BaseModel):
@@ -121,6 +129,14 @@ def get_current_username(
         return None
 
 
+def require_admin_key(x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")) -> None:
+    configured_key = os.getenv("EAGLETRADE_ADMIN_KEY", "")
+    if not configured_key:
+        raise HTTPException(status_code=503, detail="Admin demo management is not configured.")
+    if not x_admin_key or not secrets.compare_digest(x_admin_key, configured_key):
+        raise HTTPException(status_code=401, detail="Invalid admin key.")
+
+
 def require_authenticated_user(
     authorization: Optional[str] = Header(None),
     x_auth_token: Optional[str] = Header(None, alias="X-Auth-Token"),
@@ -137,6 +153,37 @@ def require_authenticated_user(
         status_code=401,
         detail="Sign in with an account that has an active PayPal subscription.",
     )
+
+
+# ------------------ ADMIN-MANAGED DEMO ACCOUNTS ------------------
+@app.get("/api/admin/demo-accounts")
+def admin_list_demo_accounts(_: None = Depends(require_admin_key)):
+    return {"s": "ok", "accounts": subscription_store.list_demo_accounts()}
+
+
+@app.post("/api/admin/demo-accounts")
+def admin_create_demo_account(payload: DemoAccountPayload, _: None = Depends(require_admin_key)):
+    username = (payload.username or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9_.-]{3,50}", username):
+        raise HTTPException(status_code=400, detail="Username must be 3–50 characters using letters, numbers, dots, underscores, or hyphens.")
+    if len(payload.password) < 8 or len(payload.password) > 128:
+        raise HTTPException(status_code=400, detail="Demo password must be between 8 and 128 characters.")
+    result = subscription_store.create_demo_account(
+        username=username,
+        password_hash=hash_password(payload.password),
+        display_name=payload.display_name or username,
+    )
+    if result.get("s") != "ok":
+        raise HTTPException(status_code=409, detail=result.get("message", "Could not create demo account."))
+    return {"s": "ok", "username": username, "message": "Demo account created. The user can sign in with the normal login form."}
+
+
+@app.patch("/api/admin/demo-accounts/{username}")
+def admin_set_demo_account_status(username: str, enabled: bool = Query(...), _: None = Depends(require_admin_key)):
+    changed = subscription_store.set_demo_account_enabled(username, enabled)
+    if not changed:
+        raise HTTPException(status_code=404, detail="Demo account not found.")
+    return {"s": "ok", "username": username.strip().lower(), "enabled": enabled}
 
 
 # ------------------ STATUS & SYSTEM ------------------
@@ -406,6 +453,8 @@ def get_fyers_auth_url(redirect_uri: str = Query("https://127.0.0.1:5000/fyers/c
 
 @app.post("/api/fyers/token")
 def set_fyers_token(payload: FyersTokenPayload, username: str = Depends(require_authenticated_user)):
+    if subscription_store.is_demo_account(username):
+        raise HTTPException(status_code=403, detail="Demo accounts cannot connect broker credentials. Demo trading is virtual only.")
     app_id = payload.app_id.strip() if payload.app_id else fyers_client.app_id
     secret_key = payload.secret_key.strip() if payload.secret_key else fyers_client.secret_key
     client_id = payload.client_id.strip() if payload.client_id else getattr(fyers_client, "client_id", "XH01499")
@@ -590,6 +639,13 @@ def get_account_pnl_history(
 
 # ------------------ FRONTEND MOUNT ------------------
 if FRONTEND_DIR.exists():
+    @app.get("/admin/demo-accounts", include_in_schema=False)
+    def serve_admin_demo_page():
+        admin_page = FRONTEND_DIR / "admin-demo.html"
+        if not admin_page.exists():
+            raise HTTPException(status_code=404, detail="Admin page not found.")
+        return FileResponse(str(admin_page))
+
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
     @app.get("/")
