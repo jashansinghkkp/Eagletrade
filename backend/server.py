@@ -96,6 +96,10 @@ class SyncStatePayload(BaseModel):
 class PreferencesPayload(BaseModel):
     preferences: Dict[str, Any] = Field(default_factory=dict)
 
+class LegacyTradeStatePayload(BaseModel):
+    positions: List[Dict[str, Any]] = Field(default_factory=list)
+    orders: List[Dict[str, Any]] = Field(default_factory=list)
+
 
 # ------------------ USER AUTH DEPENDENCY ------------------
 def get_current_username(
@@ -361,6 +365,16 @@ def save_profile(payload: UpdateCredentialsPayload, username: str = Depends(requ
 
 
 # ------------------ CLOUD USER PREFERENCES (NEON POSTGRESQL) ------------------
+@app.post("/api/migrate-local-state")
+def migrate_legacy_local_state(payload: LegacyTradeStatePayload, username: str = Depends(require_authenticated_user)):
+    try:
+        result = db.import_legacy_trade_state_if_empty(username, payload.positions, payload.orders)
+        return {"s": "ok", "data": result}
+    except Exception:
+        logger.exception("Could not migrate legacy browser trade data")
+        raise HTTPException(status_code=503, detail="Could not migrate old browser data to Neon.")
+
+
 @app.get("/api/preferences")
 def get_cloud_preferences(username: str = Depends(require_authenticated_user)):
     try:
