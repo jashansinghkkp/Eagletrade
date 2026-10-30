@@ -700,7 +700,8 @@ class VirtualTradingEngine:
                 market_is_open = is_indian_market_open()
 
                 # External sync: fetch every 3.0s during market hours, or 20.0s when market closed
-                sync_interval = 3.0 if market_is_open else 20.0
+                # Prefer authenticated broker quotes at a short polling interval; never fabricate ticks.
+                sync_interval = (1.0 if market_is_open else 20.0) if (self.fyers_client and self.fyers_client.is_configured) else (3.0 if market_is_open else 20.0)
                 if now - last_external_fetch > sync_interval:
                     last_external_fetch = now
 
@@ -723,55 +724,34 @@ class VirtualTradingEngine:
 
                     fetch_list = [s for s in fetch_set if not s.endswith("-FUT")]
                     try:
-                        results = list(self.feed_pool.map(self._fetch_single_quote, fetch_list))
-                        for quote in results:
-                            if quote:
-                                quote["anchor_price"] = quote["ltp"]
-                                quote["is_fallback"] = False
-                                self.quotes_cache[quote["symbol"]] = quote
+                        received_symbols = set()
+                        if self.fyers_client and self.fyers_client.is_configured and fetch_list:
+                            try:
+                                fyers_result = self.fyers_client.get_quotes(fetch_list)
+                                if fyers_result and fyers_result.get("s") == "ok":
+                                    for quote in fyers_result.get("data", []):
+                                        if quote and float(quote.get("ltp") or 0) > 0:
+                                            quote["anchor_price"] = quote["ltp"]
+                                            quote["is_fallback"] = False
+                                            self.quotes_cache[quote["symbol"]] = quote
+                                            received_symbols.add(quote["symbol"])
+                            except Exception as fyers_error:
+                                logger.warning("Fyers quote request failed: %s", fyers_error)
+                        missing_symbols = [sym for sym in fetch_list if sym not in received_symbols]
+                        if missing_symbols:
+                            results = list(self.feed_pool.map(self._fetch_single_quote, missing_symbols))
+                            for quote in results:
+                                if quote:
+                                    quote["anchor_price"] = quote["ltp"]
+                                    quote["is_fallback"] = False
+                                    self.quotes_cache[quote["symbol"]] = quote
                     except Exception as fe:
-                        logger.debug(f"External fetch error: {fe}")
+                        logger.debug("External quote fetch error: %s", fe)
 
                 all_symbols = list(set(list(SYMBOL_MAP.keys()) + list(self.quotes_cache.keys())))
 
-                # Continuous sub-second micro-ticks with zero-drift mean-reversion ONLY DURING ACTIVE MARKET HOURS
-                if market_is_open:
-                    for sym in all_symbols:
-                        if sym.endswith("-FUT"):
-                            continue  # Futures are derived from spot index below
-
-                        cached = self.quotes_cache.get(sym)
-                        if cached and not cached.get("is_fallback"):
-                            cur_ltp = cached["ltp"]
-                            anchor = cached.get("anchor_price", cur_ltp)
-                            drift = cur_ltp - anchor
-                            max_band = max(0.4, anchor * 0.0015)  # 0.15% maximum band
-
-                            if "INDEX" in sym:
-                                if drift > max_band:
-                                    step = random.choice([-2.0, -1.5, -1.0])
-                                elif drift < -max_band:
-                                    step = random.choice([1.0, 1.5, 2.0])
-                                else:
-                                    step = random.choice([-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5])
-                            else:
-                                if drift > max_band:
-                                    step = random.choice([-0.20, -0.15, -0.10])
-                                elif drift < -max_band:
-                                    step = random.choice([0.10, 0.15, 0.20])
-                                else:
-                                    step = random.choice([-0.15, -0.10, -0.05, 0.0, 0.05, 0.10, 0.15])
-
-                            new_ltp = round(max(1.0, cur_ltp + step), 2)
-                            prev_close = cached.get("prev_close", new_ltp)
-                            change = round(new_ltp - prev_close, 2)
-                            chg_pct = round((change / prev_close) * 100.0, 2) if prev_close else 0.0
-
-                            cached["ltp"] = new_ltp
-                            cached["change"] = change
-                            cached["chg_percent"] = chg_pct
-                            cached["high"] = max(cached.get("high", new_ltp), new_ltp)
-                            cached["low"] = min(cached.get("low", new_ltp), new_ltp)
+                # Never fabricate price movement between provider updates. Cache values
+                # change only when an external market-data provider returns a quote.
 
                 # Synchronize Index Futures tightly with their spot underlying + fixed basis (zero drift)
                 fut_pairs = [
