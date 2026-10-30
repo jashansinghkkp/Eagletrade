@@ -4937,43 +4937,38 @@
       }, 100);
     }
 
-    async function loadChartData(isBackgroundSync = false) {
-      if (!candleSeries) return;
+    let isLoadingChartData = false;
+    async function loadChartData() {
+      if (!candleSeries || isLoadingChartData) return;
       const symbolToLoad = currentSymbol;
-      if (!isBackgroundSync) {
-        lastCandle = null;
-        lastCandleSymbol = '';
-      }
+      isLoadingChartData = true;
+      lastCandle = null;
+      lastCandleSymbol = '';
       try {
         const res = await fetch(`/api/history?symbol=${encodeURIComponent(symbolToLoad)}&resolution=${currentResolution}`);
+        if (!res.ok) throw new Error(`History request failed: ${res.status}`);
         const data = await res.json();
         if (data.candles && data.candles.length && symbolToLoad === currentSymbol) {
           candleSeries.setData(data.candles);
           if (splitCandleSeries) {
             splitCandleSeries.setData(data.candles);
-            if (!isBackgroundSync && splitChart) splitChart.timeScale().fitContent();
+            if (splitChart) splitChart.timeScale().fitContent();
           }
           lastCandle = Object.assign({}, data.candles[data.candles.length - 1]);
           lastCandleSymbol = symbolToLoad;
-          if (lastCandle) {
-            const splitLtpEl = document.getElementById('split-chart-ltp');
-            if (splitLtpEl) splitLtpEl.innerText = Number(lastCandle.close || 0).toFixed(2);
-          }
-          if (!isBackgroundSync) {
-            chart.timeScale().fitContent();
-          }
+          const splitLtpEl = document.getElementById('split-chart-ltp');
+          if (splitLtpEl && lastCandle) splitLtpEl.innerText = Number(lastCandle.close || 0).toFixed(2);
+          chart.timeScale().fitContent();
         }
       } catch (err) {
         console.error('Failed to load chart data:', err);
+      } finally {
+        isLoadingChartData = false;
       }
     }
 
-    // Background 30s Chart History Sync (Zero-Delay Guarantee)
-    setInterval(() => {
-      if (document.visibilityState === 'visible' && (currentWorkstation === 'chart' || currentWorkstation === 'split')) {
-        loadChartData(true);
-      }
-    }, 30000);
+    // History is loaded on symbol/timeframe changes; live quote updates amend the
+    // forming candle incrementally instead of replacing the complete series.
 
     function setResolution(res) {
       currentResolution = res;
