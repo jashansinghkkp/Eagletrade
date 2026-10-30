@@ -727,14 +727,17 @@ class VirtualTradingEngine:
                         received_symbols = set()
                         if self.fyers_client and self.fyers_client.is_configured and fetch_list:
                             try:
-                                fyers_result = self.fyers_client.get_quotes(fetch_list)
-                                if fyers_result and fyers_result.get("s") == "ok":
-                                    for quote in fyers_result.get("data", []):
-                                        if quote and float(quote.get("ltp") or 0) > 0:
-                                            quote["anchor_price"] = quote["ltp"]
-                                            quote["is_fallback"] = False
-                                            self.quotes_cache[quote["symbol"]] = quote
-                                            received_symbols.add(quote["symbol"])
+                                # Fyers quote requests are batched to keep each request small.
+                                for batch_start in range(0, len(fetch_list), 45):
+                                    batch = fetch_list[batch_start:batch_start + 45]
+                                    fyers_result = self.fyers_client.get_quotes(batch)
+                                    if fyers_result and fyers_result.get("s") == "ok":
+                                        for quote in fyers_result.get("data", []):
+                                            if quote and float(quote.get("ltp") or 0) > 0:
+                                                quote["anchor_price"] = quote["ltp"]
+                                                quote["is_fallback"] = False
+                                                self.quotes_cache[quote["symbol"]] = quote
+                                                received_symbols.add(quote["symbol"])
                             except Exception as fyers_error:
                                 logger.warning("Fyers quote request failed: %s", fyers_error)
                         missing_symbols = [sym for sym in fetch_list if sym not in received_symbols]
