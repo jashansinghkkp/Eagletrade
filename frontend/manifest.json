@@ -1,6 +1,6 @@
 {
-  "name": "Insta Trade - Pro Trading Terminal",
-  "short_name": "Insta Trade",
+  "name": "EAGLETRADE - Pro Trading Terminal",
+  "short_name": "EAGLETRADE",
   "description": "Real-Time Indian Market Web & Mobile Trading Terminal",
   "start_url": "/?tab=watchlist",
   "scope": "/",
