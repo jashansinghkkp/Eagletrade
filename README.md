@@ -1,4 +1,4 @@
-# Insta Trade - Next-Gen Indian Market Trading Terminal
+# EAGLETRADE - Next-Gen Indian Market Trading Terminal
 
 A ultra-fast, premium-grade Web & Mobile Trading Terminal for Indian Markets (NSE & BSE) featuring real-time tick-by-tick market data, live option chains with Greeks, Index Futures, stock search, and multi-user paper trading.
 
@@ -57,12 +57,12 @@ This repository is pre-configured for one-click 24/7 deployment on any cloud pro
 
 ### Option 1: Docker
 ```bash
-docker build -t instatrade .
+docker build -t eagletrade .
 docker run -p 8000:8000 instatrade
 ```
 
 ### Option 2: Render / Railway / Fly.io / Heroku
-1. Fork or push this repository to GitHub (`extraid5607/InstaTrade`).
+1. Fork or push this repository to GitHub (`jashansinghkkp/Eagletrade`).
 2. Create a new **Web Service** pointing to your repository.
 3. The platform will automatically detect `Procfile` or `Dockerfile` and launch:
    ```bash
