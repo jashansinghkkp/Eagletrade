@@ -1,4 +1,4 @@
-const CACHE_NAME = 'insta-trade-v1';
+const CACHE_NAME = 'eagletrade-v2';
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
