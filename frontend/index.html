@@ -7,8 +7,8 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Insta Trade">
-  <meta name="application-name" content="Insta Trade">
+  <meta name="apple-mobile-web-app-title" content="EAGLETRADE">
+  <meta name="application-name" content="EAGLETRADE">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png">
@@ -1845,7 +1845,7 @@
         <div class="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-brand/10 text-brand mb-2">
           <i data-lucide="shield-check" class="w-6 h-6"></i>
         </div>
-        <h2 class="text-lg font-bold text-white tracking-tight" id="auth-modal-title">Sign In to Insta Trade</h2>
+        <h2 class="text-lg font-bold text-white tracking-tight" id="auth-modal-title">Sign In to EAGLETRADE</h2>
         <p class="text-xs text-slate-400 mt-0.5" id="auth-modal-desc">Each trader gets a dedicated account with ₹10,00,000 virtual capital</p>
       </div>
 
@@ -1891,7 +1891,7 @@
         </div>
 
         <div class="text-center pt-1 text-[11px] text-slate-400">
-          New to Insta Trade? <a href="javascript:void(0)" onclick="switchAuthTab('register')" class="text-brand font-semibold hover:underline">Create a free demo account</a>
+          New to EAGLETRADE? <a href="javascript:void(0)" onclick="switchAuthTab('register')" class="text-brand font-semibold hover:underline">Create a free demo account</a>
         </div>
       </div>
 
@@ -4817,7 +4817,7 @@
         }
       } else {
         lastBackPressTime = now;
-        showToast('Press back again to exit Insta Trade', 'info');
+        showToast('Press back again to exit EAGLETRADE', 'info');
         history.pushState({ tab: 'watchlist' }, '', '#watchlist');
       }
     });
@@ -4836,7 +4836,7 @@
         deferredPrompt.prompt();
         deferredPrompt.userChoice.then((choiceResult) => {
           if (choiceResult.outcome === 'accepted') {
-            showToast('Insta Trade app installed successfully!', 'success');
+            showToast('EAGLETRADE app installed successfully!', 'success');
           }
           deferredPrompt = null;
         });
@@ -7045,7 +7045,7 @@
         }
         if (formLogin) formLogin.classList.remove('hidden');
         if (formReg) formReg.classList.add('hidden');
-        if (modalTitle) modalTitle.innerText = 'Sign In to Insta Trade';
+        if (modalTitle) modalTitle.innerText = 'Sign In to EAGLETRADE';
         if (modalDesc) modalDesc.innerText = 'Each trader gets a dedicated account with ₹10,00,000 virtual capital';
       } else {
         if (tabLogin) {
