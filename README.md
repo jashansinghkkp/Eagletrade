@@ -58,7 +58,7 @@ This repository is pre-configured for one-click 24/7 deployment on any cloud pro
 ### Option 1: Docker
 ```bash
 docker build -t eagletrade .
-docker run -p 8000:8000 instatrade
+docker run -p 8000:8000 eagletrade
 ```
 
 ### Option 2: Render / Railway / Fly.io / Heroku
